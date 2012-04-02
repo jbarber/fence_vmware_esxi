@@ -97,9 +97,9 @@ This is more of a ESXi bug, but whilst I'm here... If a (psuedo-)TTY is allocate
 
 you will then have to reboot your ESXi server to regain normal operation (I don't know if there is a better solution). This agent avoids this by not requiring a pTTY.
 
-Logging is only done to STDOUT/STDERR. This isn't much help when invoked by RHCS. I should really add syslog support.
-
 The agent can't tell if login to the ESXi host is failing.
+
+You can't configure the facility/level of the syslog messages.
 
 =head1 AUTHOR
 
