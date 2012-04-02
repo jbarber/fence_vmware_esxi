@@ -1,0 +1,105 @@
+=head1 NAME
+
+fence_vmware_esxi
+
+=head1 SYNOPSIS
+
+fence_vmware_esxi --ipaddr esxi.server [ --login root ] --passwd password --nodename vm_guest_name
+
+=head1 DESCRIPTION
+
+A Red Hat Cluster Suite fence agent for ESXi 4.1 and later.
+
+This is required for ESXi servers that don't have a license (so don't support
+power on/off events via the VMware SDK - and hence newer versions of the
+fence_vmware agent) and also don't have a copy of the vmrun command installed
+(which is used by older versions of the fence_vmware agent and isn't installed
+on ESXi 4.1 and later).
+
+Instead this program uses ssh to connect to the ESXi server, and then runs the
+vim-cim program, which should be present on most (all?) ESXi versions.
+
+=head1 PREREQUISITES
+
+Tech support mode must have been configured on the ESXi servers as described here:
+L<http://kb.vmware.com/selfservice/microsites/search.do?cmd=displayKC&externalId=1017910>
+
+This program requries the L<Net::SSH::Expect> module. For Red Hat based systems
+this module and it's dependencies can be downloaded from the L<EPEL project|http://fedoraproject.org/wiki/EPEL> in the packages:
+  perl-Net-SSH-Expect
+  perl-Expect
+  perl-IO-Tty
+
+If you wish to use a non-root user to connect to the ESXi server, this may be
+possible using the instructions in L<this article|http://kb.vmware.com/selfservice/microsites/search.do?cmd=displayKC&externalId=1017628>, although this has not been tested by the author.
+
+=head1 OPTIONS
+
+=over
+
+=item B<--action [ on | off | status ]>
+
+Action to take on the VM specified in --nodename.
+
+=item B<--nodename>
+
+The name of the VM to perform the action on.
+
+=item B<--ipaddr>
+
+The hostname or IP address of the ESXi host that the VM is on.
+
+=item B<--login>
+
+Username for the ESXi server. Defaults to 'root'.
+
+=item B<--passwd>
+
+Password for the ESXi server.
+
+=item B<--timeout>
+
+Maximum length of time the program will run for. Defaults to 10 seconds.
+
+=item B<--verbose>
+
+Display the commands being run on the ESXi server.
+
+=item B<--help>
+
+Displays the command line syntax.
+
+=item B<--man>
+
+Display the man page.
+ 
+=back
+
+=head1 SEE ALSO
+
+Documentation about the API this program respects can be found here:
+L<https://fedorahosted.org/cluster/wiki/FenceAgentAPI>
+
+L<Net::SSH::Expect>
+
+L<fenced(8)> L<fence_tool(8)> L<cluster.conf(5)>
+
+=head1 BUGS
+
+You should probably just buy a license for ESXi and use the SDK based fence_vmware agent bundled with RHCS.
+
+During testing, it was observed that sometimes this agent was not able to discover the VM and so couldn't fence the VM (I think this is a timeout issue with my usage of Net::SSH::Expect). This is not a problem, as whilst the initial fence operation might fail, the RHCS fencing will not give up and eventually it will work.
+
+This is more of a ESXi bug, but whilst I'm here... If a (psuedo-)TTY is allocated, then the ESXi ssh server will eventually no longer be able to generate a pTTY for new ssh connections and the openssh client will report:
+  PTY allocation request failed on channel 0
+
+you will then have to reboot your ESXi server to regain normal operation (I don't know if there is a better solution). This agent avoids this by not requiring a pTTY.
+
+The agent can't tell if login to the ESXi host is failing.
+
+You can't configure the facility/level of the syslog messages.
+
+=head1 AUTHOR
+
+Jonathan Barber <jonathan.barber@gmail.com>
+
