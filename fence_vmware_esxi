@@ -1,0 +1,270 @@
+#!/usr/bin/env perl
+
+=head1 NAME
+
+fence_vmware_esxi
+
+=head1 SYNOPSIS
+
+fence_vmware_esxi --ipaddr esxi.server [ --login root ] --passwd password --nodename vm_guest_name
+
+=head1 DESCRIPTION
+
+A Red Hat Cluster Suite fence agent for ESXi 4.1 and later.
+
+This is required for ESXi servers that don't have a license (so don't support
+power on/off events via the VMware SDK - and hence newer versions of the
+fence_vmware agent) and also don't have a copy of the vmrun command installed
+(which is used by older versions of the fence_vmware agent and isn't installed
+on ESXi 4.1 and later).
+
+Instead this program uses ssh to connect to the ESXi server, and then runs the
+vim-cim program, which should be present on most (all?) ESXi versions.
+
+=head1 PREREQUISITES
+
+Tech support mode must have been configured on the ESXi servers as described here:
+L<http://kb.vmware.com/selfservice/microsites/search.do?cmd=displayKC&externalId=1017910>
+
+This program requries the L<Net::SSH::Expect> module. For Red Hat based systems
+this module and it's dependencies can be downloaded from the L<EPEL project|http://fedoraproject.org/wiki/EPEL> in the packages:
+  perl-Net-SSH-Expect
+  perl-Expect
+  perl-IO-Tty
+
+If you wish to use a non-root user to connect to the ESXi server, this may be
+possible using the instructions in L<this article|http://kb.vmware.com/selfservice/microsites/search.do?cmd=displayKC&externalId=1017628>, although this has not been tested by the author.
+
+=head1 OPTIONS
+
+=over
+
+=item B<--action [ on | off | status ]>
+
+Action to take on the VM specified in --nodename.
+
+=item B<--nodename>
+
+The name of the VM to perform the action on.
+
+=item B<--ipaddr>
+
+The hostname or IP address of the ESXi host that the VM is on.
+
+=item B<--login>
+
+Username for the ESXi server. Defaults to 'root'.
+
+=item B<--passwd>
+
+Password for the ESXi server.
+
+=item B<--timeout>
+
+Maximum length of time the program will run for. Defaults to 10 seconds.
+
+=item B<--verbose>
+
+Display the commands being run on the ESXi server.
+
+=item B<--help>
+
+Displays the command line syntax.
+
+=item B<--man>
+
+Display the man page.
+ 
+=back
+
+=head1 SEE ALSO
+
+Documentation about the API this program respects can be found here:
+L<https://fedorahosted.org/cluster/wiki/FenceAgentAPI>
+
+L<Net::SSH::Expect>
+
+L<fenced(8)> L<fence_tool(8)> L<cluster.conf(5)>
+
+=head1 BUGS
+
+You should probably just buy a license for ESXi and use the SDK based fence_vmware agent bundled with RHCS.
+
+During testing, it was observed that sometimes this agent was not able to discover the VM and so couldn't fence the VM. This is not a problem, as whilst the initial fence operation might fail, the RHCS fencing will not give up and eventually it will work.
+
+This is more of a ESXi bug, but whilst I'm here... If a (psuedo-)TTY is allocated, then the ESXi ssh server will eventually fail and the openssh client will report:
+  PTY allocation request failed on channel 0
+
+you will then have to reboot your ESXi server to regain normal operation. This agent avoids this by not requiring a pTTY.
+
+Logging is only done to STDOUT/STDERR. This isn't much help when invoked by RHCS. I should really add syslog support.
+
+=head1 AUTHOR
+
+Jonathan Barber <jonathan.barber@gmail.com>
+
+=cut
+
+use strict;
+use warnings;
+use Getopt::Long;
+use Pod::Usage;
+
+eval {
+	require Net::SSH::Expect;
+	Net::SSH::Expect->import();
+};
+$@ and die "failed: missing perl module Net::SSH::Expect\n";
+
+sub get_status {
+	my ($conn, $vmid) = @_;
+	my $status = $conn->exec( "vim-cmd /vmsvc/power.getstate $vmid" );
+	# TODO: check command worked...
+	my ($line) = grep { /Powered/ } split /\n/, $status;
+	$line || return "unknown";
+	$line =~ /Powered ?(.*)\b/;
+	return lc $1;
+}
+
+sub turn_on {
+	my ($conn, $vmid) = @_;
+	$conn->exec( "vim-cmd /vmsvc/power.on $vmid" );
+}
+
+sub turn_off {
+	my ($conn, $vmid) = @_;
+	$conn->exec( "vim-cmd /vmsvc/power.off $vmid" );
+}
+
+sub wait_for_change {
+	my ($ssh, $vmid, $target, $timeout) = @_;
+
+	while ($timeout--) {
+		my $state = get_status( $ssh, $vmid );
+		if ($state eq $target) {
+			return 1;
+		}
+		sleep 1;
+	}
+	return 0;
+}
+
+sub get_vmid {
+	my ($conn, $name) = @_;
+	my $vms = $conn->exec("vim-cmd /vmsvc/getallvms");
+	# TODO: Check command worked...
+	for my $line (split /\n/, $vms) {
+		# Skip lines that don't start with a number (VMID). These are
+		# notes for the VM
+		$line =~ /^\d+/ || next;
+		my ($vmid, $vm, $rest) = split /\s+/, $line, 3;
+		return $vmid if $name eq $vm
+	}
+	return ();
+}
+
+my ($ipaddr, $login, $passwd, $nodename, $action, $verbose, $help, $man);
+my $timeout = 10;
+my %opts = (
+	"ipaddr=s" => \$ipaddr,
+	"login=s" => \$login,
+	"passwd=s" => \$passwd,
+	"nodename=s" => \$nodename,
+	"action=s" => \$action,
+	"timeout=i" => \$timeout,
+	"verbose" => \$verbose,
+	"help" => \$help,
+	"man" => \$man,
+);
+if (@ARGV) {
+	GetOptions(
+		%opts
+	) or pod2usage(2);
+	pod2usage(1) if $help;
+	pod2usage(-exitstatus => 0, -verbose => 2) if $man;
+}
+else {
+	# ...
+	my %l_opts;
+	for my $key (keys %opts) {
+		my $l_key = $key;
+		$l_key =~ s/=.*//;
+		$l_opts{$l_key} = $opts{$key};
+	}
+
+	while (my $line = <STDIN>) {
+		chomp;
+		s/^\s*//;
+		s/\s*$//;
+		next if /^#/;
+		my ($name, $value) = ($line =~ /(.*)=(.*)/);
+		unless (exists $l_opts{$name}) {
+			warn "warning: unknown argument $name\n";
+		}
+		${$l_opts{$name}} = $value;
+	}
+	close STDIN;
+}
+$login   ||= "root";
+$verbose ||= 0;
+$action  ||= "status";
+$action    = lc $action;
+$timeout ||= 10;
+
+$ipaddr  || die "failed: missing --ipaddr\n";
+$passwd  || die "failed: missing --passwd\n";
+$nodename || die "failed: missing --nodename\n";
+
+$SIG{ALRM} = sub {
+	die "failed: timeout after $timeout seconds\n";
+};
+alarm $timeout;
+
+my $ssh = Net::SSH::Expect->new (
+	host => $ipaddr,
+	user => $login,
+	password => $passwd,
+	log_stdout => $verbose,
+	no_terminal => 1,
+);
+my $login_output = $ssh->login();
+$login_output =~ /#/ || die "failed: authentication failed with $login\@$ipaddr\n";
+END { $ssh->close() if $ssh };
+
+my $vmid = get_vmid( $ssh, $nodename );
+$vmid || die "failed: no VM named '$nodename' found on ESXi host $ipaddr\n";
+
+my $state = get_status( $ssh, $vmid );
+
+if ($action eq 'status') {
+	print "success: $nodename is $state\n";
+	if ($state eq 'on') {
+		exit 0;
+	}
+	elsif ($state eq 'off') {
+		exit 2;
+	}
+	else {
+		exit 1;
+	}
+}
+elsif ($state eq $action) {
+	print "success: nothing to do, VM $nodename is already $state\n";
+	exit;
+}
+elsif ($action eq 'off') {
+	turn_off( $ssh, $vmid );
+	wait_for_change( $ssh, $vmid, 'off', $timeout) || die "failed: didn't turn off after $timeout seconds\n";
+}
+elsif ($action eq 'on') {
+	turn_on( $ssh, $vmid );
+	wait_for_change( $ssh, $vmid, 'on', $timeout) || die "failed: didn't turn on after $timeout seconds\n";
+}
+else {
+	die "failed: unknown action '$action'\n";
+}
+
+# Just in case we haven't already quit
+print "success: VM $nodename is now $action\n";
+$ssh->close();
+exit;
