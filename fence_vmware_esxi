@@ -90,12 +90,10 @@ L<fenced(8)> L<fence_tool(8)> L<cluster.conf(5)>
 
 You should probably just buy a license for ESXi and use the SDK based fence_vmware agent bundled with RHCS.
 
-During testing, it was observed that sometimes this agent was not able to discover the VM and so couldn't fence the VM. This is not a problem, as whilst the initial fence operation might fail, the RHCS fencing will not give up and eventually it will work.
-
-This is more of a ESXi bug, but whilst I'm here... If a (psuedo-)TTY is allocated, then the ESXi ssh server will eventually fail and the openssh client will report:
+This is more of a ESXi bug, but whilst I'm here... If a (psuedo-)TTY is allocated, then the ESXi ssh server will eventually no longer be able to generate a pTTY for new ssh connections and the openssh client will report:
   PTY allocation request failed on channel 0
 
-you will then have to reboot your ESXi server to regain normal operation. This agent avoids this by not requiring a pTTY.
+you will then have to reboot your ESXi server to regain normal operation (I don't know if there is a better solution). This agent avoids this by not requiring a pTTY. However, this means that the agent can't tell if login to the ESXi host is failing because we don't get a shell prompt and waiting for the password prompt to appear again takes too long. It also means that sometimes the commands will timeout and the agent will not fence the guest - this isn't a problem because RHCS will retry the fence operation and sooner or later it will work.
 
 Logging is only done to STDOUT/STDERR. This isn't much help when invoked by RHCS. I should really add syslog support.
 
@@ -227,9 +225,13 @@ my $ssh = Net::SSH::Expect->new (
 	log_stdout => $verbose,
 	no_terminal => 1,
 );
-my $login_output = $ssh->login();
-$login_output =~ /#/ || die "failed: authentication failed with $login\@$ipaddr\n";
+$ssh->login();
 END { $ssh->close() if $ssh };
+
+# Doing the next test doesn't matter, because the time that the SSH server
+# takes to tell us that permission is denied is still too long
+#my $login_output = $ssh->exec( "uname -s" );
+#$login_output || die "failed: authentication failed with $login\@$ipaddr\n";
 
 my $vmid = get_vmid( $ssh, $nodename );
 $vmid || die "failed: no VM named '$nodename' found on ESXi host $ipaddr\n";
