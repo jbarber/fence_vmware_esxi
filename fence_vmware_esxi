@@ -90,12 +90,16 @@ L<fenced(8)> L<fence_tool(8)> L<cluster.conf(5)>
 
 You should probably just buy a license for ESXi and use the SDK based fence_vmware agent bundled with RHCS.
 
+During testing, it was observed that sometimes this agent was not able to discover the VM and so couldn't fence the VM (I think this is a timeout issue with my usage of Net::SSH::Expect). This is not a problem, as whilst the initial fence operation might fail, the RHCS fencing will not give up and eventually it will work.
+
 This is more of a ESXi bug, but whilst I'm here... If a (psuedo-)TTY is allocated, then the ESXi ssh server will eventually no longer be able to generate a pTTY for new ssh connections and the openssh client will report:
   PTY allocation request failed on channel 0
 
-you will then have to reboot your ESXi server to regain normal operation (I don't know if there is a better solution). This agent avoids this by not requiring a pTTY. However, this means that the agent can't tell if login to the ESXi host is failing because we don't get a shell prompt and waiting for the password prompt to appear again takes too long. It also means that sometimes the commands will timeout and the agent will not fence the guest - this isn't a problem because RHCS will retry the fence operation and sooner or later it will work.
+you will then have to reboot your ESXi server to regain normal operation (I don't know if there is a better solution). This agent avoids this by not requiring a pTTY.
 
 Logging is only done to STDOUT/STDERR. This isn't much help when invoked by RHCS. I should really add syslog support.
+
+The agent can't tell if login to the ESXi host is failing.
 
 =head1 AUTHOR
 
@@ -107,6 +111,11 @@ use strict;
 use warnings;
 use Getopt::Long;
 use Pod::Usage;
+use Sys::Syslog qw(:standard);
+
+BEGIN {
+	openlog "fence_vmware_esxi", "pid", "local0";
+}
 
 eval {
 	require Net::SSH::Expect;
@@ -161,8 +170,7 @@ sub get_vmid {
 	return ();
 }
 
-my ($ipaddr, $login, $passwd, $nodename, $action, $verbose, $help, $man);
-my $timeout = 10;
+my ($ipaddr, $login, $passwd, $nodename, $action, $verbose, $help, $man, $timeout);
 my %opts = (
 	"ipaddr=s" => \$ipaddr,
 	"login=s" => \$login,
@@ -191,11 +199,13 @@ else {
 	}
 
 	while (my $line = <STDIN>) {
-		chomp;
-		s/^\s*//;
-		s/\s*$//;
-		next if /^#/;
+		chomp $line;
+		$line =~ s/^\s*//;
+		$line =~ s/\s*$//;
+		next if $line =~ /^#/;
+		warn "$line\n";
 		my ($name, $value) = ($line =~ /(.*)=(.*)/);
+		syslog "info", $line;
 		unless (exists $l_opts{$name}) {
 			warn "warning: unknown argument $name\n";
 		}
@@ -205,9 +215,9 @@ else {
 }
 $login   ||= "root";
 $verbose ||= 0;
-$action  ||= "status";
+$action  ||= "reboot";
 $action    = lc $action;
-$timeout ||= 10;
+$timeout ||= 20;
 
 $ipaddr  || die "failed: missing --ipaddr\n";
 $passwd  || die "failed: missing --passwd\n";
@@ -225,6 +235,7 @@ my $ssh = Net::SSH::Expect->new (
 	log_stdout => $verbose,
 	no_terminal => 1,
 );
+warn "verbose: trying $action with $login:$passwd\@$ipaddr for VM $nodename\n" if $verbose;
 $ssh->login();
 END { $ssh->close() if $ssh };
 
@@ -259,6 +270,12 @@ elsif ($action eq 'off') {
 	wait_for_change( $ssh, $vmid, 'off', $timeout) || die "failed: didn't turn off after $timeout seconds\n";
 }
 elsif ($action eq 'on') {
+	turn_on( $ssh, $vmid );
+	wait_for_change( $ssh, $vmid, 'on', $timeout) || die "failed: didn't turn on after $timeout seconds\n";
+}
+elsif ($action eq 'reboot') {
+	turn_off( $ssh, $vmid );
+	wait_for_change( $ssh, $vmid, 'off', $timeout) || die "failed: didn't turn off after $timeout seconds\n";
 	turn_on( $ssh, $vmid );
 	wait_for_change( $ssh, $vmid, 'on', $timeout) || die "failed: didn't turn on after $timeout seconds\n";
 }
